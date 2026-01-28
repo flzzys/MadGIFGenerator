@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>梗图生成器 · 导出GIF</title>
+
+<!-- GIF 编码库 -->
+<script src="https://cdn.jsdelivr.net/npm/gifshot@0.3.2/build/gifshot.min.js"></script>
+
+<style>
+body {
+    background:#000;
+    color:#eee;
+    font-family:sans-serif;
+    display:flex;
+    gap:20px;
+    padding:20px;
+}
+
+#panel {
+    width:280px;
+    background:#000;
+    padding:15px;
+    border-radius:10px;
+}
+
+.step-note {
+    font-size:12px;
+    opacity:0.8;
+    margin:6px 0 8px;
+    line-height:1.4;
+}
+
+label {
+    display:block;
+    margin-top:10px;
+    font-size:14px;
+}
+
+input, button {
+    width:100%;
+}
+
+small { opacity:0.7; }
+
+#viewport {
+    width:320px;
+    height:320px;
+    overflow:hidden;
+    background:#000;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
+#meme {
+    width:320px;
+    height:320px;
+    object-fit:cover;
+    transform-origin:center center;
+}
+
+.curve-editor {
+    margin-top:6px;
+}
+
+.curve-editor svg {
+    width:240px;
+    height:140px;
+    background:#000;
+    border-radius:8px;
+    display:block;
+}
+
+.curve-grid {
+    stroke:#2e2e2e;
+    stroke-width:0.5;
+}
+
+.curve-line {
+    stroke:#7fd1ff;
+    stroke-width:2;
+    fill:none;
+}
+
+.curve-handle {
+    fill:#ffd479;
+    stroke:#111;
+    stroke-width:1;
+    cursor:pointer;
+}
+
+.curve-endpoint {
+    fill:#7f7f7f;
+}
+</style>
+</head>
+
+<body>
+
+<!-- 参数面板 -->
+<div id="panel">
+    <h3>参数</h3>
+    <div class="step-note">2. 调整参数</div>
+
+    <label>放大倍率
+        <input id="scaleMax" type="range" min="1" max="1.6" step="0.01" value="1.32">
+    </label>
+
+    <label>初始放大倍率
+        <input id="scaleBase" type="range" min="0.6" max="1.5" step="0.01" value="1">
+    </label>
+
+    <label>初始横向偏移(px)
+        <input id="offsetX" type="range" min="-80" max="80" step="1" value="0">
+    </label>
+
+    <label>初始纵向偏移(px)
+        <input id="offsetY" type="range" min="-80" max="80" step="1" value="0">
+    </label>
+
+    <label>放大旋转(deg)
+        <input id="scaleRotateMax" type="range" min="0" max="20" step="0.5" value="6">
+    </label>
+
+    <label>饱和度
+        <input id="saturateMax" type="range" min="1" max="4" step="0.1" value="3.2">
+    </label>
+
+    <label>亮度
+        <input id="brightnessMax" type="range" min="0.8" max="1.5" step="0.05" value="1.2">
+    </label>
+
+    <label>红色强度
+        <input id="overlayMax" type="range" min="0" max="1" step="0.01" value="0.7">
+    </label>
+
+    <label>抖动位移
+        <input id="shakeMoveMax" type="range" min="0" max="10" step="1" value="5">
+    </label>
+
+    <label>位移曲线</label>
+    <div id="moveCurveEditor" class="curve-editor"></div>
+
+    <label>抖动旋转
+        <input id="shakeRotateMax" type="range" min="0" max="15" step="0.5" value="5">
+    </label>
+
+    <label>旋转曲线</label>
+    <div id="rotateCurveEditor" class="curve-editor"></div>
+
+    <label>循环时长(ms)
+        <input id="cycleTime" type="number" value="1200">
+    </label>
+
+    <div class="step-note">3. 导出</div>
+    <button id="export">导出 GIF</button>
+</div>
+
+<!-- 显示区 -->
+<div>
+    <div class="step-note">1. 导入图片</div>
+    <input type="file" id="upload" accept="image/*"><br><br>
+    <div id="viewport">
+        <div style="position:relative;">
+            <img id="meme">
+        </div>
+    </div>
+    <div id="downloadArea" style="margin-top:12px; display:none;">
+        <a id="downloadLink" href="#" download="meme.gif">点击这里另存为 GIF</a>
+    </div>
+</div>
+
+<svg width="0" height="0" style="position:absolute; left:-9999px; top:-9999px;">
+    <filter id="redify" color-interpolation-filters="sRGB">
+        <feColorMatrix id="redMatrix" type="matrix"
+            values="1 0 0 0 0
+                    0 1 0 0 0
+                    0 0 1 0 0
+                    0 0 0 1 0" />
+    </filter>
+</svg>
+
+<script>
+const meme = document.getElementById("meme");
+const exportBtn = document.getElementById("export");
+const redMatrix = document.getElementById("redMatrix");
+const downloadArea = document.getElementById("downloadArea");
+const downloadLink = document.getElementById("downloadLink");
+let currentObjectUrl = null;
+
+upload.onchange = e => {
+    const f = e.target.files[0];
+    if (!f) return;
+
+    if (currentObjectUrl) {
+        URL.revokeObjectURL(currentObjectUrl);
+        currentObjectUrl = null;
+    }
+
+    currentObjectUrl = URL.createObjectURL(f);
+    meme.src = currentObjectUrl;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+        if (typeof reader.result === "string") {
+            persistImage(reader.result);
+        }
+    };
+    reader.readAsDataURL(f);
+};
+
+function curve(p, k) {
+    return Math.pow(p, k);
+}
+
+function cubicBezier(p1x, p1y, p2x, p2y) {
+    const cx = 3 * p1x;
+    const bx = 3 * (p2x - p1x) - cx;
+    const ax = 1 - cx - bx;
+
+    const cy = 3 * p1y;
+    const by = 3 * (p2y - p1y) - cy;
+    const ay = 1 - cy - by;
+
+    function sampleCurveX(t) {
+        return ((ax * t + bx) * t + cx) * t;
+    }
+    function sampleCurveY(t) {
+        return ((ay * t + by) * t + cy) * t;
+    }
+    function sampleCurveDerivativeX(t) {
+        return (3 * ax * t + 2 * bx) * t + cx;
+    }
+
+    function solveCurveX(x) {
+        let t = x;
+        for (let i = 0; i < 6; i++) {
+            const x2 = sampleCurveX(t) - x;
+            const d2 = sampleCurveDerivativeX(t);
+            if (Math.abs(x2) < 1e-6) return t;
+            if (Math.abs(d2) < 1e-6) break;
+            t -= x2 / d2;
+        }
+        let t0 = 0;
+        let t1 = 1;
+        t = x;
+        while (t0 < t1) {
+            const x2 = sampleCurveX(t);
+            if (Math.abs(x2 - x) < 1e-6) return t;
+            if (x > x2) t0 = t; else t1 = t;
+            t = (t1 - t0) * 0.5 + t0;
+        }
+        return t;
+    }
+
+    return function (x) {
+        if (x <= 0) return 0;
+        if (x >= 1) return 1;
+        return sampleCurveY(solveCurveX(x));
+    };
+}
+
+function createCurveEditor(container, initial, onChange) {
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.innerHTML = `
+        <line class="curve-grid" x1="0" y1="50" x2="100" y2="50"></line>
+        <line class="curve-grid" x1="50" y1="0" x2="50" y2="100"></line>
+        <path class="curve-line"></path>
+        <circle class="curve-endpoint" cx="0" cy="100" r="2.2"></circle>
+        <circle class="curve-endpoint" cx="100" cy="0" r="2.2"></circle>
+        <circle class="curve-handle" data-handle="p1" r="3.5"></circle>
+        <circle class="curve-handle" data-handle="p2" r="3.5"></circle>
+    `;
+    container.appendChild(svg);
+
+    const state = {
+        p1x: initial.p1x,
+        p1y: initial.p1y,
+        p2x: initial.p2x,
+        p2y: initial.p2y
+    };
+
+    const path = svg.querySelector(".curve-line");
+    const p1 = svg.querySelector('[data-handle="p1"]');
+    const p2 = svg.querySelector('[data-handle="p2"]');
+    let easing = cubicBezier(state.p1x, state.p1y, state.p2x, state.p2y);
+
+    function toSvgX(x) {
+        return Math.max(0, Math.min(1, x)) * 100;
+    }
+    function toSvgY(y) {
+        return (1 - Math.max(0, Math.min(1, y))) * 100;
+    }
+
+    function updatePath(triggerChange) {
+        easing = cubicBezier(state.p1x, state.p1y, state.p2x, state.p2y);
+        const samples = 40;
+        let d = "";
+        for (let i = 0; i <= samples; i++) {
+            const t = i / samples;
+            const x = toSvgX(t);
+            const y = toSvgY(easing(t));
+            d += i === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
+        }
+        path.setAttribute("d", d);
+        p1.setAttribute("cx", toSvgX(state.p1x));
+        p1.setAttribute("cy", toSvgY(state.p1y));
+        p2.setAttribute("cx", toSvgX(state.p2x));
+        p2.setAttribute("cy", toSvgY(state.p2y));
+        if (triggerChange && typeof onChange === "function") {
+            onChange(state);
+        }
+    }
+
+    function setFromPointer(e, handle) {
+        const rect = svg.getBoundingClientRect();
+        const x = (e.clientX - rect.left) / rect.width;
+        const y = (e.clientY - rect.top) / rect.height;
+        const nx = Math.max(0, Math.min(1, x));
+        const ny = Math.max(0, Math.min(1, 1 - y));
+        if (handle === "p1") {
+            state.p1x = nx;
+            state.p1y = ny;
+        } else {
+            state.p2x = nx;
+            state.p2y = ny;
+        }
+        updatePath(true);
+    }
+
+    let activeHandle = null;
+    svg.addEventListener("pointerdown", e => {
+        const target = e.target;
+        if (!target || !target.dataset || !target.dataset.handle) return;
+        activeHandle = target.dataset.handle;
+        svg.setPointerCapture(e.pointerId);
+        setFromPointer(e, activeHandle);
+    });
+    svg.addEventListener("pointermove", e => {
+        if (!activeHandle) return;
+        setFromPointer(e, activeHandle);
+    });
+    svg.addEventListener("pointerup", e => {
+        if (!activeHandle) return;
+        activeHandle = null;
+        svg.releasePointerCapture(e.pointerId);
+    });
+    svg.addEventListener("pointercancel", e => {
+        if (!activeHandle) return;
+        activeHandle = null;
+        svg.releasePointerCapture(e.pointerId);
+    });
+
+    updatePath(false);
+
+    return {
+        getValue(t) {
+            return easing(t);
+        },
+        getState() {
+            return { ...state };
+        },
+        setState(next) {
+            state.p1x = next.p1x;
+            state.p1y = next.p1y;
+            state.p2x = next.p2x;
+            state.p2y = next.p2y;
+            updatePath();
+        }
+    };
+}
+
+function setRedMatrix(k) {
+    const r1 = 1 - k + 0.2126 * k;
+    const g1 = 0.7152 * k;
+    const b1 = 0.0722 * k;
+    const g2 = 1 - k;
+    const b3 = 1 - k;
+    redMatrix.setAttribute(
+        "values",
+        `${r1} ${g1} ${b1} 0 0
+         0 ${g2} 0 0 0
+         0 0 ${b3} 0 0
+         0 0 0 1 0`
+    );
+}
+
+function getCoverSourceRect(img, targetW, targetH) {
+    const iw = img.naturalWidth || targetW;
+    const ih = img.naturalHeight || targetH;
+    const targetRatio = targetW / targetH;
+    const imgRatio = iw / ih;
+    if (imgRatio > targetRatio) {
+        const sw = ih * targetRatio;
+        const sx = (iw - sw) / 2;
+        return { sx, sy: 0, sw, sh: ih };
+    }
+    const sh = iw / targetRatio;
+    const sy = (ih - sh) / 2;
+    return { sx: 0, sy, sw: iw, sh };
+}
+
+const STORAGE_KEYS = {
+    params: "madgif:params",
+    image: "madgif:image",
+    moveCurve: "madgif:moveCurve",
+    rotateCurve: "madgif:rotateCurve"
+};
+
+const moveCurveEditor = createCurveEditor(
+    document.getElementById("moveCurveEditor"),
+    { p1x: 0.25, p1y: 0.1, p2x: 0.25, p2y: 1 },
+    () => persistCurves()
+);
+const rotateCurveEditor = createCurveEditor(
+    document.getElementById("rotateCurveEditor"),
+    { p1x: 0.15, p1y: 0.0, p2x: 0.85, p2y: 1 },
+    () => persistCurves()
+);
+
+const paramInputs = [
+    scaleMax,
+    scaleBase,
+    offsetX,
+    offsetY,
+    scaleRotateMax,
+    saturateMax,
+    brightnessMax,
+    overlayMax,
+    shakeMoveMax,
+    shakeRotateMax,
+    cycleTime
+];
+paramInputs.forEach(input => {
+    input.addEventListener("input", persistParams);
+    input.addEventListener("change", persistParams);
+});
+
+restoreParams();
+restoreCurves();
+restoreImage();
+
+function persistParams() {
+    const data = {
+        scaleMax: scaleMax.value,
+        scaleBase: scaleBase.value,
+        offsetX: offsetX.value,
+        offsetY: offsetY.value,
+        scaleRotateMax: scaleRotateMax.value,
+        saturateMax: saturateMax.value,
+        brightnessMax: brightnessMax.value,
+        overlayMax: overlayMax.value,
+        shakeMoveMax: shakeMoveMax.value,
+        shakeRotateMax: shakeRotateMax.value,
+        cycleTime: cycleTime.value
+    };
+    localStorage.setItem(STORAGE_KEYS.params, JSON.stringify(data));
+}
+
+function restoreParams() {
+    const raw = localStorage.getItem(STORAGE_KEYS.params);
+    if (!raw) return;
+    try {
+        const data = JSON.parse(raw);
+        if (data.scaleMax) scaleMax.value = data.scaleMax;
+        if (data.scaleBase) scaleBase.value = data.scaleBase;
+        if (data.offsetX !== undefined) offsetX.value = data.offsetX;
+        if (data.offsetY !== undefined) offsetY.value = data.offsetY;
+        if (data.scaleRotateMax) scaleRotateMax.value = data.scaleRotateMax;
+        if (data.saturateMax) saturateMax.value = data.saturateMax;
+        if (data.brightnessMax) brightnessMax.value = data.brightnessMax;
+        if (data.overlayMax) overlayMax.value = data.overlayMax;
+        if (data.shakeMoveMax) shakeMoveMax.value = data.shakeMoveMax;
+        if (data.shakeRotateMax) shakeRotateMax.value = data.shakeRotateMax;
+        if (data.cycleTime) cycleTime.value = data.cycleTime;
+    } catch (e) {
+        console.warn("无法恢复参数", e);
+    }
+}
+
+function persistCurves() {
+    localStorage.setItem(
+        STORAGE_KEYS.moveCurve,
+        JSON.stringify(moveCurveEditor.getState())
+    );
+    localStorage.setItem(
+        STORAGE_KEYS.rotateCurve,
+        JSON.stringify(rotateCurveEditor.getState())
+    );
+}
+
+function restoreCurves() {
+    try {
+        const move = JSON.parse(localStorage.getItem(STORAGE_KEYS.moveCurve) || "null");
+        if (move) moveCurveEditor.setState(move);
+        const rot = JSON.parse(localStorage.getItem(STORAGE_KEYS.rotateCurve) || "null");
+        if (rot) rotateCurveEditor.setState(rot);
+    } catch (e) {
+        console.warn("无法恢复曲线", e);
+    }
+}
+
+function persistImage(dataUrl) {
+    try {
+        localStorage.setItem(STORAGE_KEYS.image, dataUrl);
+    } catch (e) {
+        console.warn("无法保存图片", e);
+    }
+}
+
+function restoreImage() {
+    const dataUrl = localStorage.getItem(STORAGE_KEYS.image);
+    if (!dataUrl) return;
+    meme.src = dataUrl;
+}
+
+function seededRandom(seed) {
+    const x = Math.sin(seed) * 10000;
+    return x - Math.floor(x);
+}
+
+function getFrameParams(p, frameIndex) {
+    const scale = scaleBase.value * (1 + (scaleMax.value - 1) * p);
+    const baseRot = scaleRotateMax.value * p;
+    const baseOffsetX = Number(offsetX.value) || 0;
+    const baseOffsetY = Number(offsetY.value) || 0;
+
+    const moveStr = moveCurveEditor.getValue(p);
+    const rotStr  = rotateCurveEditor.getValue(p);
+
+    const rx = seededRandom(frameIndex * 3.1 + 1.7) * 2 - 1;
+    const ry = seededRandom(frameIndex * 3.1 + 9.2) * 2 - 1;
+    const rr = seededRandom(frameIndex * 3.1 + 5.4) * 2 - 1;
+
+    const x = baseOffsetX + rx * shakeMoveMax.value * 2 * moveStr;
+    const y = baseOffsetY + ry * shakeMoveMax.value * 2 * moveStr;
+    const r = baseRot + rr * shakeRotateMax.value * rotStr;
+
+    return { scale, x, y, r };
+}
+
+function applyFrame(p, frameIndex) {
+    const { scale, x, y, r } = getFrameParams(p, frameIndex);
+    const redShift = Math.min(1, overlayMax.value * p);
+    setRedMatrix(redShift);
+
+    meme.style.transform =
+        `scale(${scale}) translate(${x}px,${y}px) rotate(${r}deg)`;
+
+    meme.style.filter =
+        `url(#redify)
+         saturate(${1+(saturateMax.value-1)*p})
+         brightness(${1+(brightnessMax.value-1)*p})`;
+}
+
+/* 实时播放 */
+const fps = 30;
+let start = performance.now();
+function getFrameCount(durationMs) {
+    return Math.max(1, Math.round(durationMs * fps / 1000));
+}
+function loop(t) {
+    const duration = +cycleTime.value;
+    const frames = getFrameCount(duration);
+    const p = ((t - start) % duration) / duration;
+    const frameIndex = Math.floor(p * frames);
+    const pFrame = frameIndex / frames;
+    applyFrame(pFrame, frameIndex);
+    requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ===== 导出 GIF ===== */
+exportBtn.onclick = async () => {
+    if (!meme.src) {
+        alert("请先上传图片");
+        return;
+    }
+
+    if (!window.gifshot || typeof gifshot.createGIF !== "function") {
+        alert("GIF 编码库未加载，请检查网络或刷新页面后重试");
+        return;
+    }
+
+    if (!meme.complete || meme.naturalWidth === 0) {
+        await meme.decode();
+    }
+
+    exportBtn.disabled = true;
+    exportBtn.textContent = "正在生成 GIF…";
+    downloadArea.style.display = "none";
+
+    await new Promise(requestAnimationFrame);
+
+    const duration = +cycleTime.value;
+    const frames = getFrameCount(duration);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 320;
+    canvas.height = 320;
+    const ctx = canvas.getContext("2d");
+
+    const images = [];
+
+    for (let i = 0; i < frames; i++) {
+        const p = i / frames;
+        const { scale, x, y, r } = getFrameParams(p, i);
+
+        ctx.setTransform(1,0,0,1,0,0);
+        ctx.filter = "none";
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+
+        ctx.save();
+        ctx.translate(160,160);
+        ctx.rotate(r * Math.PI / 180);
+        ctx.scale(scale, scale);
+        const redShift = Math.min(1, overlayMax.value * p);
+        ctx.filter =
+            `saturate(${1+(saturateMax.value-1)*p})
+             brightness(${1+(brightnessMax.value-1)*p})`;
+
+        const src = getCoverSourceRect(meme, 320, 320);
+        ctx.drawImage(
+            meme,
+            src.sx, src.sy, src.sw, src.sh,
+            -160 + x, -160 + y, 320, 320
+        );
+
+        ctx.restore();
+
+        if (redShift > 0) {
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imgData.data;
+            const k = redShift;
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+                const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                data[i] = r * (1 - k) + l * k;
+                data[i + 1] = g * (1 - k);
+                data[i + 2] = b * (1 - k);
+            }
+            ctx.putImageData(imgData, 0, 0);
+        }
+
+        images.push(canvas.toDataURL("image/png"));
+    }
+
+    try {
+        gifshot.createGIF(
+            {
+                images,
+                interval: 1 / fps,
+                gifWidth: 320,
+                gifHeight: 320,
+                transparent: "rgba(0,0,0,0)",
+                numWorkers: 2,
+                progressCallback: function (p) {
+                    const pct = Math.max(0, Math.min(100, Math.round(p * 100)));
+                    exportBtn.textContent = `正在生成 GIF… ${pct}%`;
+                }
+            },
+            function (obj) {
+                exportBtn.disabled = false;
+                exportBtn.textContent = "导出 GIF";
+
+                if (obj.error) {
+                    alert("GIF 生成失败");
+                    return;
+                }
+
+                const tempLink = document.createElement("a");
+                tempLink.href = obj.image;
+                tempLink.download = "meme.gif";
+                document.body.appendChild(tempLink);
+                tempLink.click();
+                tempLink.remove();
+
+                downloadLink.href = obj.image;
+                downloadLink.download = "meme.gif";
+                downloadLink.textContent = "点击这里另存为 GIF";
+                downloadLink.style.display = "inline-block";
+                downloadArea.style.display = "block";
+            }
+        );
+    } catch (err) {
+        exportBtn.disabled = false;
+        exportBtn.textContent = "导出 GIF";
+        alert("GIF 生成失败");
+        console.error(err);
+    }
+};
+
+</script>
+
+</body>
+</html>
