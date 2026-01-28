@@ -378,6 +378,21 @@ function setRedMatrix(k) {
     );
 }
 
+function getCoverSourceRect(img, targetW, targetH) {
+    const iw = img.naturalWidth || targetW;
+    const ih = img.naturalHeight || targetH;
+    const targetRatio = targetW / targetH;
+    const imgRatio = iw / ih;
+    if (imgRatio > targetRatio) {
+        const sw = ih * targetRatio;
+        const sx = (iw - sw) / 2;
+        return { sx, sy: 0, sw, sh: ih };
+    }
+    const sh = iw / targetRatio;
+    const sy = (ih - sh) / 2;
+    return { sx: 0, sy, sw: iw, sh };
+}
+
 const STORAGE_KEYS = {
     params: "madgif:params",
     image: "madgif:image",
@@ -594,7 +609,12 @@ exportBtn.onclick = async () => {
             `saturate(${1+(saturateMax.value-1)*p})
              brightness(${1+(brightnessMax.value-1)*p})`;
 
-        ctx.drawImage(meme, -160 + x, -160 + y, 320, 320);
+        const src = getCoverSourceRect(meme, 320, 320);
+        ctx.drawImage(
+            meme,
+            src.sx, src.sy, src.sw, src.sh,
+            -160 + x, -160 + y, 320, 320
+        );
 
         ctx.restore();
 
